@@ -1,25 +1,57 @@
-# 🎈 Blank app template
+# AGAD — Assisted Generation of Approval Documents
 
-A simple Streamlit app template for you to modify!
+AGAD is a Streamlit demo of a multi-agent assisted intake and document generation workflow for hospital approval paperwork.
 
-[![Open in Streamlit](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://blank-app-template.streamlit.app/)
+## What it does
 
-### How to run it on your own machine
+- Captures patient intake data once through a conversational flow
+- Uses that data to pre-fill department-specific approval documents
+- Requires human review before finalizing any document
 
-Prerequisite: install `uv` if you don't already have it.
+## How it works
 
+- `streamlit_app.py` contains the intake UI and document generator UI
+- `references/department-field-requirements.json` defines department templates and required fields
+- `SKILL.md` describes the document-generation skill mapping
+- `design.md` documents the evidence-based pivot and project scope
+
+## Running locally
+
+1. Activate the Python environment
+   ```bash
+   source /workspaces/AGAD/venv/bin/activate
+   ```
+
+2. Set the Gemini API key
+   - Option 1: use Streamlit secrets in `.streamlit/secrets.toml`
+   - Option 2: export the environment variable
+     ```bash
+     export GEMINI_API_KEY="YOUR_ACTUAL_KEY"
+     ```
+
+3. Run the app
+   ```bash
+   streamlit run streamlit_app.py
+   ```
+
+## Secrets handling
+
+- Do not commit real API keys.
+- Add only placeholders to `.streamlit/secrets.toml` if the file exists locally.
+- Prefer using an environment variable in shell sessions for local testing.
+
+## Testing
+
+Run tests with:
+
+```bash
+pytest -q
 ```
-$ curl -LsSf https://astral.sh/uv/install.sh | sh
-```
 
-1. Sync the dependencies
+## CI
 
-   ```
-   $ uv sync
-   ```
+GitHub Actions runs `pytest -q` on push and pull request to `main`.
 
-2. Run the app
+## Notes
 
-   ```
-   $ uv run streamlit run streamlit_app.py
-   ```
+This version is intentionally scoped around one strong user problem: repetitive paperwork and redundant data entry across departments. It does not attempt to predict denials or diagnose insurance adjudication risk.

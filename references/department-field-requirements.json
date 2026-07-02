@@ -1,0 +1,18 @@
+{
+    "Admitting/Registration": {
+        "required_fields": ["Name", "Company"],
+        "display_template": "🏥 HOSPITAL ADMISSION FORM\n======================\nPatient Full Name: {Name}\nEmployer/Company Sponsor: {Company}\nStatus: PENDING ADMISSION"
+    },
+    "Insurance/HMO Desk": {
+        "required_fields": ["Name", "Member_ID", "Company", "Diagnosis"],
+        "display_template": "💳 HMO LETTER OF AUTHORIZATION (LOA) REQUEST\n=========================================\nPatient Name: {Name}\nMember Card ID: {Member_ID}\nSponsoring Corporate Plan: {Company}\nClinical Diagnosis: {Diagnosis}\nStatus: HMO PRE-AUTHORIZATION REQUIRED"
+    },
+    "Emergency/Triage": {
+        "required_fields": ["Name", "Diagnosis"],
+        "display_template": "🚨 EMERGENCY ROOM TRIAGE RECORD\n===========================\nPatient Name: {Name}\nChief Complaint/Symptoms: {Diagnosis}\nPriority Level: AWAITING CLINICAL EVALUATION"
+    },
+    "Billing/Discharge": {
+        "required_fields": ["Name", "Member_ID", "Procedures"],
+        "display_template": "💰 FINAL DISCHARGE STATEMENT\n=========================\nGuarantor/Patient: {Name}\nPolicy Contract ID: {Member_ID}\nRendered Services: {Procedures}\nStatus: CALCULATING ITEMIZATION"
+    }
+}

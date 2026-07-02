@@ -1,0 +1,21 @@
+# Local MCP config for AGAD
+# This is a lightweight formalization of the local agent tool inputs.
+# It is not a full production MCP server, but it provides a documented local interface.
+
+mcp:
+  name: agad-local-mcp
+  version: 0.1.0
+  description: "Local Model Context Protocol configuration for AGAD agent tools."
+  tools:
+    - name: department-field-requirements
+      type: file
+      description: "Department form field mappings and templates."
+      path: ../references/department-field-requirements.json
+    - name: skill-mapping
+      type: file
+      description: "AGAD skill documentation for department form generation."
+      path: ../SKILL.md
+    - name: design-reference
+      type: file
+      description: "Design rationale and evaluation alignment notes."
+      path: ../design.md

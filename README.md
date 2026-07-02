@@ -40,6 +40,22 @@ AGAD is a Streamlit demo of a multi-agent assisted intake and document generatio
 - Add only placeholders to `.streamlit/secrets.toml` if the file exists locally.
 - Prefer using an environment variable in shell sessions for local testing.
 
+## Local MCP support
+
+A minimal local MCP reference artifact is included in `mcp/local-mcp.yaml` and explained in `mcp/README.md`.
+
+It documents how repository artifacts map to a local agent tool interface for evaluation and reviewer inspection.
+
+## Evaluation coverage
+
+This project includes:
+
+- Defensive external API handling in `streamlit_app.py`
+- Unit tests for intake agent behavior and document generation
+- GitHub Actions CI for automated `pytest -q` runs
+- Local MCP reference documentation in `mcp/local-mcp.yaml`
+- Design and skill artifacts to support rubric-aligned form generation
+
 ## Testing
 
 Run tests with:

@@ -31,7 +31,7 @@ The design is based on the interview convergence documented in the original proj
 - Diagnosis-wording / denial prediction
 - Real HMO adjudication or production insurance integrations
 - Full cloud production infrastructure
-- Custom MCP server protocol
+- Custom MCP server protocol (a minimal local MCP reference is provided in `mcp/local-mcp.yaml`)
 
 ## 4. Architecture
 

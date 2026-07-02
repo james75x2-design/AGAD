@@ -4,6 +4,8 @@ import os
 import time
 import requests
 import logging
+import random
+import re
 
 # Page configuration setup
 st.set_page_config(page_title="AGAD Portal - Capstone Demo", layout="wide")
@@ -81,15 +83,46 @@ def run_intake_agent(user_input, history, current_slots):
     }
 
     try:
-        res = requests.post(url, headers={'Content-Type': 'application/json'}, json=payload, timeout=15)
-        # Validate response
-        if not res.ok:
-            # Log full response body for diagnostics (not shown in UI)
+        # Attempt request with simple exponential backoff for transient 5xx errors
+        max_attempts = 3
+        backoff_base = 1.0
+        res = None
+        for attempt in range(1, max_attempts + 1):
             try:
-                logger.error("Intake Agent HTTP %s response: %s", res.status_code, res.text)
+                res = requests.post(url, headers={'Content-Type': 'application/json'}, json=payload, timeout=15)
+            except Exception as exc:
+                logger.exception("Intake Agent request exception on attempt %s", attempt)
+                # If this was the last attempt, surface a generic error to the UI
+                if attempt == max_attempts:
+                    return f"Intake Agent exception occurred while contacting upstream service.", current_slots
+                sleep_for = backoff_base * (2 ** (attempt - 1)) + random.uniform(0, 0.5)
+                time.sleep(sleep_for)
+                continue
+
+            # If response OK, proceed
+            if res.ok:
+                break
+
+            # For server errors, retry with backoff
+            if 500 <= getattr(res, 'status_code', 0) < 600 and attempt < max_attempts:
+                # Truncate body in logs to avoid leaking large content
+                body_snippet = (getattr(res, 'text', '') or '')[:200]
+                logger.warning("Intake Agent HTTP %s (attempt %s). Retrying. Body: %s", res.status_code, attempt, body_snippet)
+                sleep_for = backoff_base * (2 ** (attempt - 1)) + random.uniform(0, 0.5)
+                time.sleep(sleep_for)
+                continue
+
+            # Non-retriable or final response
+            break
+
+        # Validate response
+        if not res or not res.ok:
+            # Log truncated response body for diagnostics (not shown in UI)
+            try:
+                logger.error("Intake Agent HTTP %s response: %.200s", getattr(res, 'status_code', 'N/A'), getattr(res, 'text', ''))
             except Exception:
-                logger.error("Intake Agent HTTP %s (no body available)", res.status_code)
-            return f"Intake Agent error: upstream API returned status {res.status_code}.", current_slots
+                logger.error("Intake Agent HTTP %s (no body available)", getattr(res, 'status_code', 'N/A'))
+            return f"Intake Agent error: upstream API returned status {getattr(res, 'status_code', 'N/A') }.", current_slots
 
         res_json = res.json()
         # Navigate safe keys
@@ -231,16 +264,23 @@ with right_col:
             st.error(f"Action Blocked: Cannot approve document. Missing metrics for: {', '.join(missing_fields)}")
         else:
             os.makedirs("final_documents", exist_ok=True)
-            filename = f"final_documents/final_{st.session_state.patient_data['Name'].replace(' ', '_').lower()}_{target_dept.replace('/', '_').lower()}.json"
-            
+            # Safely sanitize patient name and department for filenames
+            raw_name = st.session_state.patient_data.get('Name') or 'unknown'
+            safe_name = re.sub(r"[^A-Za-z0-9_-]", "_", raw_name.strip().replace(' ', '_'))
+            safe_dept = re.sub(r"[^A-Za-z0-9_-]", "_", target_dept.strip().replace('/', '_'))
+            filename = f"final_documents/final_{safe_name.lower()}_{safe_dept.lower()}.json"
+
             output_payload = {
                 "timestamp": time.time(),
                 "department": target_dept,
                 "collected_data": st.session_state.patient_data,
                 "rendered_output": rendered_text
             }
-            
-            with open(filename, "w") as f:
+
+            # Atomic write: write to temp file then rename
+            tmp_filename = filename + ".tmp"
+            with open(tmp_filename, "w") as f:
                 json.dump(output_payload, f, indent=4)
-                
+            os.replace(tmp_filename, filename)
+
             st.success(f"🔒 Document Finalized! Signed-off state written to: `{filename}`")

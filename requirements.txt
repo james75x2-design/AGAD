@@ -42,3 +42,4 @@ watchdog==6.0.0
 websockets==16.0
 
 pyyaml==6.0.3
+pytest==7.4.3

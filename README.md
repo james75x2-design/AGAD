@@ -46,6 +46,8 @@ A minimal local MCP reference artifact is included in `mcp/local-mcp.yaml` and e
 
 It documents how repository artifacts map to a local agent tool interface for evaluation and reviewer inspection.
 
+A dedicated unit test (`tests/test_mcp_yaml.py`) validates that `mcp/local-mcp.yaml` is valid YAML and contains the expected MCP metadata.
+
 ## Evaluation coverage
 
 This project includes:

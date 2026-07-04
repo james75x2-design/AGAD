@@ -1,57 +1,75 @@
-# 🏥 AGAD: Assisted Generation of Approval Documents
+# AGAD — Assisted Generation of Approval Documents
 
-A multi-agent system reducing repetitive hospital intake paperwork through unified data capture — collect once, generate department-specific documents, human-approve before finalization.
+AGAD is a Streamlit demo of a multi-agent assisted intake and document generation workflow for hospital approval paperwork.
 
-## 🏗️ Architecture
+## What it does
 
-Three-node ADK 2.0 graph with task-based LLM routing:
+- Captures patient intake data once through a conversational flow
+- Uses that data to pre-fill department-specific approval documents
+- Requires human review before finalizing any document
 
-- **Node 1 — Intake Capture Agent** (Groq · llama-3.3-70b-versatile · text)
-- **Node 2 — Document Generator Agent** (Groq · per-department documents)
-- **Node 3 — Vision/OCR Agent** (Gemini · gemini-2.5-flash · uploads)
-- **HITL Gate** — Human approval required before any document is finalized
+## How it works
 
-## 🔐 Security — 7 Defense Layers
+- `streamlit_app.py` contains the intake UI and document generator UI
+- `references/department-field-requirements.json` defines department templates and required fields
+- `SKILL.md` describes the document-generation skill mapping
+- `design.md` documents the evidence-based pivot and project scope
 
-1. Consent banner (demo disclaimer)
-2. PII regex screening
-3. Prompt-injection guard
-4. Per-session rate limit
-5. Field whitelist enforcement
-6. Empty-value filtering
-7. Timestamped audit log
+## Running locally
 
-See `TEST_REPORT.md` for the 37-test verification suite.
-
-## 🚀 Deploy
-
-1. Fork this repo
-2. Deploy on https://share.streamlit.io
-3. In App Settings → Secrets, add:
+1. Activate the Python environment
+   ```bash
+   source /workspaces/AGAD/venv/bin/activate
    ```
-   GROQ_API_KEY = "your-groq-key"
-   GEMINI_API_KEY = "your-gemini-key"
+
+2. Set the Gemini API key
+   - Option 1: use Streamlit secrets in `.streamlit/secrets.toml`
+   - Option 2: export the environment variable
+     ```bash
+     export GEMINI_API_KEY="YOUR_ACTUAL_KEY"
+     ```
+
+3. Run the app
+   ```bash
+   streamlit run streamlit_app.py
    ```
-4. Done!
 
-## 🔑 Get API Keys
+## Secrets handling
 
-- **Groq** (free): https://console.groq.com/keys
-- **Gemini** (free): https://aistudio.google.com/apikey
+- Do not commit real API keys.
+- Add only placeholders to `.streamlit/secrets.toml` if the file exists locally.
+- Prefer using an environment variable in shell sessions for local testing.
 
-## 🧪 Local Development
+## Local MCP support
+
+A minimal local MCP reference artifact is included in `mcp/local-mcp.yaml` and explained in `mcp/README.md`.
+
+It documents how repository artifacts map to a local agent tool interface for evaluation and reviewer inspection.
+
+A dedicated unit test (`tests/test_mcp_yaml.py`) validates that `mcp/local-mcp.yaml` is valid YAML and contains the expected MCP metadata.
+
+## Evaluation coverage
+
+This project includes:
+
+- Defensive external API handling in `streamlit_app.py`
+- Unit tests for intake agent behavior and document generation
+- GitHub Actions CI for automated `pytest -q` runs
+- Local MCP reference documentation in `mcp/local-mcp.yaml`
+- Design and skill artifacts to support rubric-aligned form generation
+
+## Testing
+
+Run tests with:
 
 ```bash
-pip install -r requirements.txt
-cp .streamlit/secrets.toml.example .streamlit/secrets.toml
-# Fill in your API keys in secrets.toml
-streamlit run streamlit_app.py
+pytest -q
 ```
 
-## 📖 Design Reference
+## CI
 
-See `design.md` for the evidence base, interview findings, and architectural decisions.
+GitHub Actions runs `pytest -q` on push and pull request to `main`.
 
-## ⚠️ Important
+## Notes
 
-This is a **capstone demo**. Do NOT enter real patient information. The app uses free-tier LLM APIs which may use inputs for model improvement.
+This version is intentionally scoped around one strong user problem: repetitive paperwork and redundant data entry across departments. It does not attempt to predict denials or diagnose insurance adjudication risk.

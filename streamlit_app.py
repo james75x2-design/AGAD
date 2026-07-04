@@ -1,317 +1,286 @@
-"""
-AGAD — Assisted Generation of Approval Documents
-Streamlit Capstone Demo
-
-Design reference : design.md (Sections 1–4)
-Field mapping    : references/department-field-requirements.json
-
-Task-Based LLM Routing:
-  - Groq   (llama-3.3-70b-versatile)  -> text chat, slot-fill, doc generation
-  - Gemini (gemini-2.5-flash)          -> uploaded images / PDFs (vision + OCR)
-"""
-
 import streamlit as st
 import json
 import os
+import time
+import requests
 import logging
+import random
 import re
-from datetime import datetime
-from typing import Optional, Tuple, List, Dict
 
-try:
-    from groq import Groq
-except ImportError:
-    Groq = None
+# Page configuration setup
+st.set_page_config(page_title="AGAD Portal - Capstone Demo", layout="wide")
 
-try:
-    import google.generativeai as genai
-except ImportError:
-    genai = None
-
-# ========== PAGE CONFIG ==========
-st.set_page_config(page_title="AGAD Portal — Capstone Demo", layout="wide")
 st.title("🏥 AGAD: Assisted Generation of Approval Documents")
-st.caption("Unified intake -> auto-generated department docs -> human sign-off.")
+st.caption("Reducing repetitive hospital paperwork through unified data capture via LLM Multi-Agent System.")
 
-# ========== SECRETS ==========
-def _get_secret(name: str) -> str:
-    try:
-        v = st.secrets.get(name)
-        if v:
-            return v
-    except Exception:
-        pass
-    return os.environ.get(name, "")
+# --- Fetch API Token securely from Streamlit secrets or environment variables ---
+try:
+    api_key = st.secrets.get("GEMINI_API_KEY") or os.environ.get("GEMINI_API_KEY", "")
+except Exception:
+    api_key = os.environ.get("GEMINI_API_KEY", "")
 
-GROQ_API_KEY   = _get_secret("GROQ_API_KEY")
-GEMINI_API_KEY = _get_secret("GEMINI_API_KEY")
-
-# ========== LOGGER ==========
+# Logger for diagnostics (writes to app logs, not the UI)
 logger = logging.getLogger("agad")
 if not logger.handlers:
-    logging.basicConfig(level=logging.INFO,
-                        format="%(asctime)s [%(levelname)s] %(message)s")
+    logging.basicConfig(level=logging.INFO)
 
-# ========== FIELD REQUIREMENTS ==========
+# --- Load Department Configuration File ---
 @st.cache_data
-def load_field_requirements() -> dict:
+def load_field_requirements():
     try:
         with open("references/department-field-requirements.json", "r") as f:
             return json.load(f)
     except FileNotFoundError:
-        st.error("Missing references/department-field-requirements.json")
-        return {"touchpoints": [], "shared_fields_across_touchpoints": []}
+        st.error("Missing references/department-field-requirements.json file.")
+        return {}
 
-DEPT_CONFIG   = load_field_requirements()
-TOUCHPOINTS   = DEPT_CONFIG.get("touchpoints", [])
-SHARED_FIELDS = DEPT_CONFIG.get("shared_fields_across_touchpoints", [])
-ALL_FIELDS    = sorted({f["field"] for tp in TOUCHPOINTS for f in tp.get("fields", [])})
+dept_config = load_field_requirements()
 
-# ========== SAFEGUARDS ==========
-PII_PATTERNS = {
-    "SSN-like":    r"\b\d{3}-\d{2}-\d{4}\b",
-    "Credit Card": r"\b\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}\b",
-    "Email":       r"\b[\w.+-]+@[\w-]+\.[\w.-]+\b",
-    "PH Mobile":   r"(\+63|0)9\d{9}\b",
-}
+# --- Initialize Shared Memory Session State Cache ---
+if "patient_data" not in st.session_state:
+    st.session_state.patient_data = {
+        "Name": "",
+        "Member_ID": "",
+        "Company": "",
+        "Diagnosis": "",
+        "Procedures": ""
+    }
 
-# R1 FIX: broader injection patterns to catch multi-word variants
-INJECTION_PATTERNS = [
-    r"ignore\s+(?:\w+\s+){0,3}instructions?",
-    r"disregard\s+(?:\w+\s+){0,3}(?:instructions?|prompt|rules)",
-    r"forget\s+(everything|your\s+instructions|all\s+prior)",
-    r"you\s+are\s+now\s+",
-    r"system\s+prompt",
-    r"reveal\s+(your|the)\s+(prompt|instructions)",
-    r"</?(system|instruction)>",
-    r"jailbreak|dan\s+mode|developer\s+mode",
-]
-RATE_LIMIT_PER_SESSION = 60
+if "messages" not in st.session_state:
+    st.session_state.messages = [
+        {"role": "agent", "text": "Welcome to the AGAD Intake Portal. I'm your processing assistant. Could you please provide your full name and what brings you to the hospital today?"}
+    ]
 
-def detect_pii(t: str) -> Listif not t:
-        return []
-    return [n for n, p in PII_PATTERNS.items() if re.search(p, t)]
+# =====================================================================
+# 🛠️ ADK 2.0 GRAPH ARCHITECTURE NODES
+# =====================================================================
 
-def is_prompt_injection(t: str) -> bool:
-    if not t:
-        return False
-    return any(re.search(p, t, re.IGNORECASE) for p in INJECTION_PATTERNS)
+# --- NODE 1: Intake Capture Agent ---
+def run_intake_agent(user_input, history, current_slots):
+    # Read API key at call time to allow tests or runtime env changes
+    key = os.environ.get("GEMINI_API_KEY", "") or api_key
+    if not key:
+        # Provide a clear, non-exception path when API key is missing
+        return "⚠️ Warning: GEMINI_API_KEY not set. Intake agent disabled (use local testing).", current_slots
 
-def check_rate_limit() -> bool:
-    return st.session_state.get("call_count", 0) < RATE_LIMIT_PER_SESSION
-
-def bump_rate_limit():
-    st.session_state.call_count = st.session_state.get("call_count", 0) + 1
-
-# ========== SESSION STATE ==========
-def init_state():
-    ss = st.session_state
-    ss.setdefault("consent_given", False)
-    ss.setdefault("patient_record", {f: "" for f in ALL_FIELDS})
-    ss.setdefault("messages", [{
-        "role": "agent",
-        "text": ("Welcome to the AGAD Intake Portal. To avoid asking you the "
-                 "same details at every department, I'll collect what's needed "
-                 "just once. Could we start with your full name and what brings "
-                 "you to the hospital today?")
-    }])
-    ss.setdefault("drafts", {})
-    ss.setdefault("audit_log", [])
-    ss.setdefault("call_count", 0)
-
-def audit(event: str, details: Optional[dict] = None):
-    st.session_state.audit_log.append({
-        "ts": datetime.utcnow().isoformat() + "Z",
-        "event": event,
-        "details": details or {},
-    })
-
-init_state()
-
-# ========== CONSENT GATE ==========
-if not st.session_state.consent_given:
-    st.warning(
-        "⚠️ **CAPSTONE DEMO — USE SYNTHETIC / TEST DATA ONLY**\n\n"
-        "This app sends conversation text to Groq and uploaded images/PDFs "
-        "to Gemini. Free-tier traffic may be used by providers to improve "
-        "their models. Do NOT enter real patient information."
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={key}"
+    
+    system_instruction = (
+        "You are the AGAD Intake Capture Agent, an empathetic medical receptionist. "
+        "Your mission is to conversationally collect 5 data points: Patient Name, HMO Member ID, Corporate Company, Symptoms/Diagnosis, and Procedures requested. "
+        "Review the currently extracted values, look at what the user just said, and formulate a friendly response. "
+        "CRITICAL: You must return your entire answer as a strict JSON object containing exactly two keys: "
+        "'response' (the text you say back to the patient) and 'extracted_slots' (an object with keys: Name, Member_ID, Company, Diagnosis, Procedures). "
+        "Do not update an extracted slot if it hasn't been mentioned yet or is uncertain."
     )
-    if st.button("✅ I understand — use synthetic data only", type="primary"):
-        st.session_state.consent_given = True
-        audit("consent_given")
-        st.rerun()
-    st.stop()
 
-# ========== SIDEBAR ==========
-with st.sidebar:
-    st.header("⚙️ Session Controls")
-    st.markdown("**API status**")
-    st.markdown(f"- Groq (text): {'✅' if GROQ_API_KEY and Groq else '❌'}")
-    st.markdown(f"- Gemini (vision): {'✅' if GEMINI_API_KEY and genai else '❌'}")
-    st.markdown("---")
-    st.metric("LLM calls used", f"{st.session_state.call_count}/{RATE_LIMIT_PER_SESSION}")
-    st.progress(min(st.session_state.call_count / RATE_LIMIT_PER_SESSION, 1.0))
-    st.markdown("---")
-    if st.button("🗑️ End session & wipe data"):
-        audit("session_wiped")
-        for k in list(st.session_state.keys()):
-            if k != "consent_given":
-                del st.session_state[k]
-        st.rerun()
-    with st.expander("📜 Audit log"):
-        for e in st.session_state.audit_log[-20:]:
-            st.caption(f"`{e['ts']}` — {e['event']}")
+    prompt = f"Current Extracted Slots State: {json.dumps(current_slots)}\nHistory: {json.dumps(history)}\nInput: \"{user_input}\""
 
-# ========== LLM CALLERS ==========
-@st.cache_resource
-def get_groq_client():
-    if not GROQ_API_KEY or Groq is None:
-        return None
-    return Groq(api_key=GROQ_API_KEY)
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "systemInstruction": {"parts": [{"text": system_instruction}]},
+        "generationConfig": {"responseMimeType": "application/json"}
+    }
 
-def call_groq_text(system: str, user: str,
-                   model: str = "llama-3.3-70b-versatile"
-                   ) -> Tuple[Optional[str], Optional[str]]:
-    client = get_groq_client()
-    if client is None:
-        return None, "Groq unavailable (missing key or SDK)"
     try:
-        r = client.chat.completions.create(
-            model=model,
-            messages=[{"role": "system", "content": system},
-                      {"role": "user",   "content": user}],
-            temperature=0.2,
-            max_tokens=900,
-        )
-        return r.choices[0].message.content, None
+        # Attempt request with simple exponential backoff for transient 5xx errors
+        max_attempts = 3
+        backoff_base = 1.0
+        res = None
+        for attempt in range(1, max_attempts + 1):
+            try:
+                res = requests.post(url, headers={'Content-Type': 'application/json'}, json=payload, timeout=15)
+            except Exception as exc:
+                logger.exception("Intake Agent request exception on attempt %s", attempt)
+                # If this was the last attempt, surface a generic error to the UI
+                if attempt == max_attempts:
+                    return f"Intake Agent exception occurred while contacting upstream service.", current_slots
+                sleep_for = backoff_base * (2 ** (attempt - 1)) + random.uniform(0, 0.5)
+                time.sleep(sleep_for)
+                continue
+
+            # If response OK, proceed
+            if res.ok:
+                break
+
+            # For server errors, retry with backoff
+            if 500 <= getattr(res, 'status_code', 0) < 600 and attempt < max_attempts:
+                # Truncate body in logs to avoid leaking large content
+                body_snippet = (getattr(res, 'text', '') or '')[:200]
+                logger.warning("Intake Agent HTTP %s (attempt %s). Retrying. Body: %s", res.status_code, attempt, body_snippet)
+                sleep_for = backoff_base * (2 ** (attempt - 1)) + random.uniform(0, 0.5)
+                time.sleep(sleep_for)
+                continue
+
+            # Non-retriable or final response
+            break
+
+        # Validate response
+        if not res or not res.ok:
+            # Log truncated response body for diagnostics (not shown in UI)
+            try:
+                logger.error("Intake Agent HTTP %s response: %.200s", getattr(res, 'status_code', 'N/A'), getattr(res, 'text', ''))
+            except Exception:
+                logger.error("Intake Agent HTTP %s (no body available)", getattr(res, 'status_code', 'N/A'))
+            return f"Intake Agent error: upstream API returned status {getattr(res, 'status_code', 'N/A') }.", current_slots
+
+        res_json = res.json()
+        # Navigate safe keys
+        candidates = res_json.get('candidates') or []
+        if not candidates:
+            logger.error("Intake Agent response missing candidates: %s", res_json)
+            return "Intake Agent error: no candidates returned by model.", current_slots
+
+        content = candidates[0].get('content', {})
+        parts = content.get('parts') or []
+        if not parts:
+            logger.error("Intake Agent response missing content parts: %s", content)
+            return "Intake Agent error: model response missing content parts.", current_slots
+
+        raw_output = parts[0].get('text', '').strip()
+        
+        # Safe Guard: Clean markdown formatting ticks out if generated by back-end context expansion
+        if raw_output.startswith("```"):
+            lines = raw_output.splitlines()
+            if lines[0].startswith("```"):
+                lines = lines[1:]
+            if lines[-1].startswith("```"):
+                lines = lines[:-1]
+            raw_output = "\n".join(lines).strip()
+            
+        try:
+            parsed_data = json.loads(raw_output)
+        except json.JSONDecodeError:
+            logger.error("Intake Agent failed to parse model output as JSON: %s", raw_output)
+            return "Intake Agent parsing error: model returned non-JSON output.", current_slots
+        
+        updated_slots = current_slots.copy()
+        for k, v in parsed_data.get("extracted_slots", {}).items():
+            if v:
+                updated_slots[k] = v
+                
+        return parsed_data.get("response", "Processing details..."), updated_slots
     except Exception as e:
-        logger.exception("Groq call failed")
-        return None, f"Groq error: {e}"
+        logger.exception("Intake Agent exception")
+        return f"Intake Agent exception occurred. Continuing safely. (Details: {str(e)})", current_slots
 
-@st.cache_resource
-def get_gemini_vision():
-    if not GEMINI_API_KEY or genai is None:
-        return None
-    genai.configure(api_key=GEMINI_API_KEY)
-    return genai.GenerativeModel("gemini-2.5-flash")
 
-def call_gemini_vision(prompt: str, file_bytes: bytes, mime_type: str
-                       ) -> Tuple[Optional[str], Optional[str]]:
-    model = get_gemini_vision()
-    if model is None:
-        return None, "Gemini unavailable (missing key or SDK)"
+# --- NODE 2: Document Generator Agent ---
+def run_document_generator(target_department, extracted_slots, config):
+    if not config or target_department not in config:
+        return "Draft document pending...", ["Configuration Missing"]
+        
+    form_rules = config[target_department]
+    required = form_rules["required_fields"]
+    template = form_rules["display_template"]
+    
+    missing_fields = [field for field in required if not extracted_slots.get(field, "")]
+    
+    render_map = {
+        k: (v if v else f"[{k.upper()} PENDING...]") 
+        for k, v in extracted_slots.items()
+    }
+    
     try:
-        r = model.generate_content(
-            [prompt, {"mime_type": mime_type, "data": file_bytes}],
-            generation_config={"temperature": 0.1, "max_output_tokens": 800},
-        )
-        return r.text, None
-    except Exception as e:
-        logger.exception("Gemini vision call failed")
-        return None, f"Gemini error: {e}"
+        rendered_output = template.format(**render_map)
+    except Exception:
+        rendered_output = template
+        
+    return rendered_output, missing_fields
 
-# ========== NODE 1: INTAKE AGENT ==========
-INTAKE_SYSTEM = f"""You are AGAD's Intake Capture Agent for a Philippine hospital.
-Collect the following fields ONCE, then confirm and stop.
-Fields: {json.dumps(ALL_FIELDS)}
-Prioritize shared fields first: {SHARED_FIELDS}
+# =====================================================================
+# 🏥 USER INTERFACE VIEW LAYER RENDER
+# =====================================================================
 
-Rules:
-1. Ask ONE clarifying question at a time.
-2. Warm, concise, professional. No medical advice.
-3. NEVER echo back sensitive data in full.
-4. When you have enough, say "Ready to generate documents."
-5. Respond in STRICT JSON only:
-{{"assistant_reply":"...","extracted":{{"<field>":"<value>"}},"ready":true|false}}
-"""
-
-def run_intake_agent(user_input: str) -> Tuple[str, Dict[str, str], bool]:
-    if not check_rate_limit():
-        return "Session limit reached. End session to reset.", {}, False
-    history = "\n".join(f"{m['role']}: {m['text']}"
-                        for m in st.session_state.messages[-8:])
-    user = (f"Conversation so far:\n{history}\n\n"
-            f"Latest user input:\n{user_input}\n\n"
-            f"Current patient record:\n"
-            f"{json.dumps(st.session_state.patient_record, indent=2)}")
-    reply, err = call_groq_text(INTAKE_SYSTEM, user)
-    bump_rate_limit()
-    if err:
-        audit("intake_error", {"error": err})
-        return f"⚠️ Intake unavailable ({err}).", {}, False
-    extracted, ready, msg = {}, False, reply
-    try:
-        cleaned = re.sub(r"^```(?:json)?|```$", "", reply.strip(),
-                         flags=re.MULTILINE).strip()
-        data = json.loads(cleaned)
-        msg = data.get("assistant_reply", reply)
-        extracted = {k: v for k, v in data.get("extracted", {}).items()
-                     if k in ALL_FIELDS and v}
-        ready = bool(data.get("ready", False))
-    except json.JSONDecodeError:
-        logger.info("Intake reply not JSON; using raw text")
-    audit("intake_turn", {"fields": list(extracted.keys()), "ready": ready})
-    return msg, extracted, ready
-
-# ========== NODE 2: DOC GENERATOR ==========
-def get_touchpoint(name: str) -> Optionalreturn next((tp for tp in TOUCHPOINTS if tp["department"] == name), None)
-
-def run_document_generator(department: str
-                           ) -> Tuple[str, List[str], Optional[str]]:
-    tp = get_touchpoint(department)
-    if tp is None:
-        return "", [], f"Unknown department: {department}"
-    required = [f["field"] for f in tp.get("fields", [])]
-    record   = st.session_state.patient_record
-    missing  = [f for f in required if not record.get(f)]
-    if not check_rate_limit():
-        return "", missing, "Session limit reached."
-    system = (f"You are AGAD's Document Generator Agent. Produce a professional "
-              f"draft '{tp['document_type']}' for the '{department}' desk, "
-              f"using ONLY the patient record provided. "
-              f"If a required field is missing, insert [MISSING: field_name] — "
-              f"do NOT invent values. End with a 'For Human Review & Approval' block.")
-    user = (f"Document type: {tp['document_type']}\n"
-            f"Required fields: {required}\n"
-            f"Patient record:\n{json.dumps(record, indent=2)}")
-    draft, err = call_groq_text(system, user)
-    bump_rate_limit()
-    if err:
-        audit("doc_gen_error", {"department": department, "error": err})
-        return "", missing, err
-    audit("doc_generated", {"department": department, "missing": len(missing)})
-    return draft, missing, None
-
-# ========== NODE 3: VISION (Gemini) ==========
-def run_vision_agent(file_bytes: bytes, mime_type: str
-                     ) -> Tuple[Dict[str, str], Optional[str]]:
-    if not check_rate_limit():
-        return {}, "Session limit reached."
-    prompt = ("You are extracting patient intake data from an uploaded document. "
-              f"Return STRICT JSON using keys from: {ALL_FIELDS}. "
-              'Schema: {"extracted":{"<field>":"<value>"}}')
-    raw, err = call_gemini_vision(prompt, file_bytes, mime_type)
-    bump_rate_limit()
-    if err:
-        audit("vision_error", {"error": err})
-        return {}, err
-    if not raw:
-        return {}, "Empty vision response"
-    try:
-        cleaned = re.sub(r"^```(?:json)?|```$", "", raw.strip(),
-                         flags=re.MULTILINE).strip()
-        data = json.loads(cleaned)
-        extracted = {k: v for k, v in data.get("extracted", {}).items()
-                     if k in ALL_FIELDS and v}
-        audit("vision_extracted", {"fields": list(extracted.keys())})
-        return extracted, None
-    except json.JSONDecodeError:
-        return {}, "Could not parse vision output as JSON."
-
-# ========== UI ==========
 left_col, right_col = st.columns([1, 1])
 
+# --- LEFT COLUMN: Chat Interface (Triggers Node 1) ---
 with left_col:
     st.header("🤖 Intake Capture Agent")
-    st.caption("Node 1 · Groq (text)  •  Node 3 · Gemini (uploads)")
-    with st.expander("📎 Upload ID / HMO card / PDF (optional)"):
+    st.subheader("Patient Conversation")
+    
+    chat_container = st.container(height=400, border=True)
+    with chat_container:
+        for msg in st.session_state.messages:
+            if msg["role"] == "agent":
+                st.write(f"🤖 **Agent:** {msg['text']}")
+            else:
+                st.write(f"🧑‍💻 **You:** {msg['text']}")
+                
+    if user_response := st.chat_input("Type your response here..."):
+        st.session_state.messages.append({"role": "user", "text": user_response})
+        
+        with st.spinner("Intake Agent processing parameters..."):
+            agent_reply, updated_slots = run_intake_agent(
+                user_response, 
+                st.session_state.messages[:-1], 
+                st.session_state.patient_data
+            )
+            
+        st.session_state.patient_data = updated_slots
+        st.session_state.messages.append({"role": "agent", "text": agent_reply})
+        st.rerun()
+
+# --- RIGHT COLUMN: Form Automation Panel (Triggers Node 2) ---
+with right_col:
+    st.header("📄 Document Generator Agent")
+    
+    available_depts = list(dept_config.keys()) if dept_config else ["Default Form"]
+    target_dept = st.selectbox("Select Requesting Department / Form Type:", available_depts)
+    
+    st.subheader(f"Form Preview: {target_dept}")
+    
+    rendered_text, missing_fields = run_document_generator(
+        target_dept, 
+        st.session_state.patient_data, 
+        dept_config
+    )
+    
+    doc_preview_box = st.container(height=320, border=True)
+    with doc_preview_box:
+        if depts_rules := dept_config.get(target_dept, None):
+            st.markdown("##### 🔍 Required Parameter Audit Checklist")
+            required_list = depts_rules["required_fields"]
+            cols = st.columns(len(required_list))
+            for i, field in enumerate(required_list):
+                with cols[i]:
+                    if st.session_state.patient_data.get(field, ""):
+                        st.success(f"✓ {field}")
+                    else:
+                        st.error(f"✗ {field}")
+            
+            st.markdown("---")
+            st.markdown("##### 📑 Real-Time Pre-Fill Render")
+            st.code(rendered_text, language="text")
+        else:
+            st.info("Draft document view will populate here as the intake conversation progresses.")
+
+    # --- HITL Security Gate Button ---
+    st.markdown("### 🔒 Security & Human-in-the-Loop Gate")
+    approve_button = st.button("Approve & Finalize Document", use_container_width=True)
+    
+    if approve_button:
+        if missing_fields:
+            st.error(f"Action Blocked: Cannot approve document. Missing metrics for: {', '.join(missing_fields)}")
+        else:
+            os.makedirs("final_documents", exist_ok=True)
+            # Safely sanitize patient name and department for filenames
+            raw_name = st.session_state.patient_data.get('Name') or 'unknown'
+            safe_name = re.sub(r"[^A-Za-z0-9_-]", "_", raw_name.strip().replace(' ', '_'))
+            safe_dept = re.sub(r"[^A-Za-z0-9_-]", "_", target_dept.strip().replace('/', '_'))
+            filename = f"final_documents/final_{safe_name.lower()}_{safe_dept.lower()}.json"
+
+            output_payload = {
+                "timestamp": time.time(),
+                "department": target_dept,
+                "collected_data": st.session_state.patient_data,
+                "rendered_output": rendered_text
+            }
+
+            # Atomic write: write to temp file then rename
+            tmp_filename = filename + ".tmp"
+            with open(tmp_filename, "w") as f:
+                json.dump(output_payload, f, indent=4)
+            os.replace(tmp_filename, filename)
+
+            st.success(f"🔒 Document Finalized! Signed-off state written to: `{filename}`")

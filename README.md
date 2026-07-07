@@ -41,21 +41,27 @@ AGAD captures a patient's information once through a conversational intake agent
 
 ## One Intake → Four Department Documents
 
-The screenshots below all come from the *same* patient conversation. AGAD generates whichever department form is needed from a single unified session.
+The screenshots below all come from the same patient conversation. AGAD generates whichever department form is needed from a single unified session.
 
 **1. Admitting / Registration** — patient captured, admission form auto-filled
-docs/screenshots/01-admitting.png
+
+![Admitting](docs/01-admitting.png)
 
 **2. Insurance / HMO Desk** — same data pre-fills the HMO Letter of Authorization
-![HMO Desk](docs/screenshots/02-hmo* — clinical fields (symptoms, priority) render for triage
-docs/screenshots/03-triage.png
+
+![HMO Desk](docs/02-hmo.png)
+
+**3. Emergency / Triage** — clinical fields (symptoms, priority) render for triage
+
+![Triage](docs/03-triage.png)
 
 **4. Billing / Discharge** — discharge statement compiled from the same session
-docs/screenshots/04-billing.png
+
+![Billing](docs/04-billing.png)
 
 ## Architecture
 
-![As/agad-architecture.png
+![Architecture](docs/agad-architecture.png)
 
 Three nodes in an ADK 2.0 graph, all coordinated by a task-based LLM router.
 
